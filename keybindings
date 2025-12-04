@@ -1,0 +1,15 @@
+# core keybindings
+KEY1    KEY2    KEY3    DESCRIPTION
+ESC                     exit the current mode, going up one level in the action stack, discarding any partial inputs
+ENTER                   enter manual text editing mode when hovering over a passage, otherwise contextually trigger or send the selected action
+CTRL    S               save current document
+CTRL    SHIFT   S       save document and exit
+CTRL    Q               exit, prompt for save if document has unsaved changes
+CTRL    SHIFT   Q       autosave without prompt and exit immediatly
+CTRL    F               find text all passages.
+CTRL    SHIFT   F       find passage by searching through the associated raw user input text
+TAB                     swap focus between passages or user input box
+LEFT                    normal cursor position move in text edit mode, menu traversal when in a menu, when in passages mode opens left side menu options for current passage
+RIGHT                   normal cursor position move in text edit mode, menu traversal when in a menu, when in passages mode opens right side menu options for current passage
+UP                      normal cursor position move in text edit mode, menu traversal when in a menu, when in passages view moves focus to previous (upper) passage
+DOWN                    normal cursor position move in text edit mode, menu traversal when in a menu, when in passages view moves focus to next (lower) passage

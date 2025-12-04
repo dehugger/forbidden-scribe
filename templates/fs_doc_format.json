@@ -1,0 +1,39 @@
+{
+  "config":{
+    "api_key":"",
+    "api_url":"http://localhost:9000/api/v1/",
+    "api_spec":"openai," //what api specification to use
+    "model_name":"llama3-8b",
+    "temperature":0.7,
+    "structured_output_schema":"schema1.json" //definition schema for the response
+    "max_input_tokens":4096, //total tokens for input
+    "max_output_tokens":null //response length is not limited if null
+  },
+  "meta":{
+    "document_name":"robot story 1",
+    "setting":"original", //ex "Worm" or "Harry Potter"
+    "system_prompt":null, //default to default fs prompt if none
+    "send_prepend_passage":true, //send the previous passage to the new content for context
+    "send_append_text":false //send the subsequent passage for context, only if exists
+  },
+  "content":{
+    "passages":[
+      {
+        "id":123, //a random uid for  addressing
+        "rank":0, //what order the passage should be displayed in, sorted
+        "model":"gpt-oss-120b", //record model that generated
+        "user_entry":"so then i hit him with my lazer sword and choped a leg or two off", //original user input, immutable
+        "ai_response":"I swung my laser sword, connecting with the left knee-cap." //ai response text
+        "text":"I swung my laser sword, connecting with the left knee-cap." //actual current text, can be edited by user
+      },
+      {
+        "id":456,
+        "rank":1,
+        "model":"gpt-oss-120b",
+        "user_entry":"the robot yelled in pain and fell over",
+        "ai_response":"The robot vocalized a burst of static in distressed, collapsing to the ground without the support the severed leg."
+        "manual_edited":false
+      }
+    ]
+  }
+}
