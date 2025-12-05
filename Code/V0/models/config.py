@@ -41,13 +41,13 @@ class APIConfig:
     def from_dict(cls, data: dict) -> "APIConfig":
         """Deserialize from dictionary.
 
-        Falls back to environment variables if config values are missing:
-        - FS_API_URL for api_url
-        - FS_MODEL for model_name
+        Environment variables take precedence over config.json when set:
+        - FS_API_URL overrides api_url
+        - FS_MODEL overrides model_name
         """
-        # Get values with environment variable fallbacks
-        api_url = data.get("api_url") or os.environ.get(ENV_API_URL)
-        model_name = data.get("model_name") or os.environ.get(ENV_MODEL)
+        # Environment variables take precedence over config file
+        api_url = os.environ.get(ENV_API_URL) or data.get("api_url")
+        model_name = os.environ.get(ENV_MODEL) or data.get("model_name")
 
         return cls(
             api_url=api_url or "https://api.cerebras.ai/v1",
@@ -67,7 +67,7 @@ class DocumentMeta:
     document_name: str = "Untitled"
     setting: str = "original"  # e.g., "Harry Potter", "Worm", "original"
     system_prompt: Optional[str] = None  # Path to prompt file or None
-    send_prepend_passage: bool = True
+    send_prepend_passage: bool = False
     send_append_text: bool = False
 
     def to_dict(self) -> dict:
@@ -93,52 +93,10 @@ class DocumentMeta:
 
 
 @dataclass
-class KeyBindings:
-    """Keybinding configuration."""
-
-    quit: str = "ctrl+q"
-    save: str = "ctrl+s"
-    send: str = "ctrl+d"
-    switch_focus: str = "tab"
-    menu_left: str = "left"
-    menu_right: str = "right"
-    edit_passage: str = "enter"
-    cancel: str = "escape"
-
-    def to_dict(self) -> dict:
-        """Serialize to dictionary."""
-        return {
-            "quit": self.quit,
-            "save": self.save,
-            "send": self.send,
-            "switch_focus": self.switch_focus,
-            "menu_left": self.menu_left,
-            "menu_right": self.menu_right,
-            "edit_passage": self.edit_passage,
-            "cancel": self.cancel,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "KeyBindings":
-        """Deserialize from dictionary."""
-        return cls(
-            quit=data.get("quit", "ctrl+q"),
-            save=data.get("save", "ctrl+s"),
-            send=data.get("send", "ctrl+d"),
-            switch_focus=data.get("switch_focus", "tab"),
-            menu_left=data.get("menu_left", "left"),
-            menu_right=data.get("menu_right", "right"),
-            edit_passage=data.get("edit_passage", "enter"),
-            cancel=data.get("cancel", "escape"),
-        )
-
-
-@dataclass
 class AppConfig:
     """Application-level configuration."""
 
     api: APIConfig = field(default_factory=APIConfig)
-    keybindings: KeyBindings = field(default_factory=KeyBindings)
     default_prompt_path: str = "prompts/default_prompt.txt"
     log_path: str = "logs/forbidden_scribe.log"
     context_chars: int = 2000
@@ -148,7 +106,6 @@ class AppConfig:
         """Serialize to dictionary."""
         return {
             "api": self.api.to_dict(),
-            "keybindings": self.keybindings.to_dict(),
             "default_prompt_path": self.default_prompt_path,
             "log_path": self.log_path,
             "context_chars": self.context_chars,
@@ -160,7 +117,6 @@ class AppConfig:
         """Deserialize from dictionary."""
         return cls(
             api=APIConfig.from_dict(data.get("api", {})),
-            keybindings=KeyBindings.from_dict(data.get("keybindings", {})),
             default_prompt_path=data.get(
                 "default_prompt_path", "prompts/default_prompt.txt"
             ),
@@ -229,7 +185,7 @@ class Secrets:
     def load(cls, secrets_path: Path) -> "Secrets":
         """Load secrets from secrets.json.
 
-        Falls back to FS_API_KEY environment variable if not in config.
+        FS_API_KEY environment variable takes precedence over config file.
 
         Args:
             secrets_path: Path to secrets.json file.
@@ -246,9 +202,10 @@ class Secrets:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Fall back to environment variable if api_key not set
-        if not secrets.api_key:
-            secrets.api_key = os.environ.get(ENV_API_KEY, "")
+        # Environment variable takes precedence over config file
+        env_key = os.environ.get(ENV_API_KEY)
+        if env_key is not None:
+            secrets.api_key = env_key
 
         return secrets
 
@@ -268,10 +225,13 @@ class Secrets:
         except (OSError, IOError):
             return False
 
-    def is_valid(self) -> bool:
-        """Check if API key is set.
+    def is_configured(self) -> bool:
+        """Check if secrets file was loaded or environment variable was set.
+
+        Note: An empty string API key is valid for APIs that don't require
+        authentication (e.g., local network APIs).
 
         Returns:
-            True if api_key is non-empty.
+            True always - empty string is a valid API key value.
         """
-        return bool(self.api_key)
+        return True

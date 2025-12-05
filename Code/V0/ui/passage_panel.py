@@ -32,6 +32,27 @@ class PassagePanel:
         self.scroll_offset: int = 0
         self.focused: bool = False
 
+    def _get_indicator_color(self, passage_id: str) -> int:
+        """Get a consistent color for a passage based on its ID.
+
+        Args:
+            passage_id: Unique passage identifier.
+
+        Returns:
+            Color pair index from the gradient set.
+        """
+        # Use hash of ID to deterministically pick a color
+        indicator_colors = [
+            ColorPair.INDICATOR_1,
+            ColorPair.INDICATOR_2,
+            ColorPair.INDICATOR_3,
+            ColorPair.INDICATOR_4,
+            ColorPair.INDICATOR_5,
+            ColorPair.INDICATOR_6,
+        ]
+        hash_val = sum(ord(c) for c in passage_id)
+        return indicator_colors[hash_val % len(indicator_colors)]
+
     def update_passages(self, passages: list[Passage]) -> None:
         """Update the passage list.
 
@@ -66,18 +87,11 @@ class PassagePanel:
             self._ensure_visible()
 
     def _ensure_visible(self) -> None:
-        """Ensure the selected passage is visible."""
-        height, _ = self.window.getmaxyx()
-        content_height = height - 2  # Account for border
-        lines_per_passage = 4  # separator + index + 2 lines preview
-
-        # Calculate which "slot" the selection is in
-        visible_passages = max(1, content_height // lines_per_passage)
-
-        if self.selected_index < self.scroll_offset:
-            self.scroll_offset = self.selected_index
-        elif self.selected_index >= self.scroll_offset + visible_passages:
-            self.scroll_offset = self.selected_index - visible_passages + 1
+        """Ensure the selected passage is visible by scrolling if needed."""
+        # Don't scroll until passages exceed screen capacity
+        # This keeps all passages visible for as long as possible
+        # When scrolling is needed, we'll handle it dynamically in draw()
+        self.scroll_offset = 0
 
     def get_selected(self) -> Optional[Passage]:
         """Get the currently selected passage.
@@ -90,7 +104,7 @@ class PassagePanel:
         return None
 
     def draw(self) -> None:
-        """Render the passage panel."""
+        """Render the passage panel with subtle colored indicators."""
         self.window.erase()
         height, width = self.window.getmaxyx()
 
@@ -110,69 +124,94 @@ class PassagePanel:
         if not self.passages:
             safe_addstr(
                 self.window, 2, 2,
-                "No passages yet. Type in the input panel and press Ctrl+D.",
+                "No passages yet. Type below and press Enter.",
             )
             self.window.noutrefresh()
             return
 
-        # Content area
+        # Content area: just border + small left margin + text
         content_height = height - 2
-        content_width = width - 4  # margins
-        lines_per_passage = 4
-        visible_passages = max(1, content_height // lines_per_passage)
-
-        # Clamp scroll offset
-        max_scroll = max(0, len(self.passages) - visible_passages)
-        self.scroll_offset = min(self.scroll_offset, max_scroll)
+        content_width = width - 4  # Standard margins
 
         y = 1
-        for i in range(self.scroll_offset, len(self.passages)):
-            if y >= height - 1:
-                break
-
+        # Always start from first passage (scroll_offset is always 0)
+        # Render all passages completely, even if they extend beyond screen
+        for i in range(len(self.passages)):
             passage = self.passages[i]
             is_selected = (i == self.selected_index)
+            start_y = y
 
-            # Separator line
-            if i > self.scroll_offset:
-                separator = "─" * (content_width)
-                safe_addstr(self.window, y, 2, separator)
-                y += 1
-                if y >= height - 1:
-                    break
+            # Get color for this passage's indicator
+            indicator_color = self._get_indicator_color(passage.id)
 
-            # Passage header
-            header = f"[{i + 1}]"
-            if passage.manual_edited:
-                header += " (edited)"
-            if is_selected:
-                attr = curses.color_pair(ColorPair.SELECTED) | curses.A_BOLD
-            else:
-                attr = curses.A_BOLD
-
-            safe_addstr(self.window, y, 2, header, attr)
-            y += 1
-            if y >= height - 1:
-                break
-
-            # Passage preview (2 lines)
-            preview_lines = wrap_text(passage.text, content_width)
-            for line in preview_lines[:2]:
-                if y >= height - 1:
-                    break
-                if is_selected:
-                    attr = curses.color_pair(ColorPair.SELECTED)
-                else:
-                    attr = 0
-                safe_addstr(self.window, y, 2, line, attr)
+            # Add spacing between passages (one blank line)
+            if i > 0:
                 y += 1
 
-            # Add ellipsis if text is longer
-            if len(preview_lines) > 2 and y < height - 1:
-                if is_selected:
-                    attr = curses.color_pair(ColorPair.SELECTED)
-                else:
-                    attr = curses.A_DIM
-                safe_addstr(self.window, y - 1, content_width - 1, "…", attr)
+            # Status indicator (pending/edited) as first line if needed
+            if passage.pending or passage.manual_edited:
+                status = ""
+                if passage.pending:
+                    status = "⏳ generating..."
+                elif passage.manual_edited:
+                    status = "✎ edited"
+                safe_addstr(self.window, y, 3, status, curses.A_DIM)
+                y += 1
+
+            # Complete passage text - render ALL lines regardless of screen size
+            text_lines = wrap_text(passage.text, content_width - 1)
+            for line in text_lines:
+                # Only draw if within visible area
+                if 1 <= y < height - 1:
+                    if passage.pending:
+                        # Pending passages show in dim color
+                        attr = curses.A_DIM
+                    else:
+                        attr = 0
+                    safe_addstr(self.window, y, 3, line, attr)
+                y += 1
+
+            # Draw subtle colored indicator on far left edge (column 1)
+            # Only draw within visible area
+            end_y = y
+            for row in range(start_y, end_y):
+                if 1 <= row < height - 1:
+                    try:
+                        self.window.addstr(
+                            row, 1, "▌",
+                            curses.color_pair(indicator_color)
+                        )
+                    except curses.error:
+                        pass
+
+            # Draw subtle highlight on selected passage (only when panel is focused)
+            if is_selected and self.focused:
+                # Calculate outline dimensions - full width
+                outline_left = 1
+                outline_right = width - 2
+                outline_width = outline_right - outline_left
+
+                # Only draw outline within visible area
+                visible_start = max(start_y, 1)
+                visible_end = min(end_y, height - 1)
+
+                try:
+                    # Right edge line only
+                    for row in range(visible_start, visible_end):
+                        if 1 <= row < height - 1:
+                            self.window.addstr(
+                                row, outline_right, "│",
+                                curses.color_pair(ColorPair.SELECTED)
+                            )
+
+                    # Bottom line (if visible and it's the actual end)
+                    if visible_end == end_y and visible_end < height - 1:
+                        bottom_line = "─" * outline_width
+                        self.window.addstr(
+                            visible_end, outline_left, bottom_line,
+                            curses.color_pair(ColorPair.SELECTED)
+                        )
+                except curses.error:
+                    pass
 
         self.window.noutrefresh()

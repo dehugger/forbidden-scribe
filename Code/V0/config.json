@@ -18,7 +18,7 @@
     "edit_passage": "enter",
     "cancel": "escape"
   },
-  "default_prompt_path": "prompts/default_prompt.txt",
+  "default_prompt_path": "prompts/minimal_editor.txt",
   "log_path": "logs/forbidden_scribe.log",
   "context_chars": 2000,
   "works_directory": "works"

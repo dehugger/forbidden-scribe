@@ -1,6 +1,7 @@
 """Editor state machine and main application logic."""
 
 import curses
+import logging
 import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -11,7 +12,7 @@ from typing import Optional
 from logging_config import get_logger, setup_logging
 from models.config import AppConfig, Secrets
 from models.document import Document
-from models.passage import Passage
+from models.passage import Passage, PassageAuditEntry
 from agents.base import AgentResult
 from agents.edit_agent import EditAgent
 from agents.fix_agent import FixAgent
@@ -21,7 +22,9 @@ from wrappers.llm_client import OpenAICompatibleClient
 from ui.base import ColorPair, setup_colors, safe_addstr
 from ui.passage_panel import PassagePanel
 from ui.input_panel import InputPanel
+from ui.edit_panel import EditPanel
 from ui.menu import Menu, create_left_menu, create_right_menu
+from ui.debug_panel import DebugPanel, DebugPanelHandler
 
 
 class EditorMode(Enum):
@@ -55,27 +58,27 @@ class ForbiddenScribeEditor:
     Manages the TUI, document state, API interactions, and user input.
     """
 
-    def __init__(self, stdscr: "curses.window", config_dir: Path) -> None:
+    def __init__(
+        self,
+        stdscr: "curses.window",
+        config_dir: Path,
+        debug: bool = False,
+    ) -> None:
         """Initialize the editor.
 
         Args:
             stdscr: Main curses screen.
             config_dir: Directory containing config.json and secrets.json.
+            debug: Enable debug panel with scrolling log output.
         """
         self.stdscr = stdscr
         self.config_dir = config_dir
+        self.debug_mode = debug
         self.logger = get_logger("editor")
 
         # Load configuration
         self.config = AppConfig.load(config_dir / "config.json")
         self.secrets = Secrets.load(config_dir / "secrets.json")
-
-        # Validate API key
-        if not self.secrets.is_valid():
-            raise ValueError(
-                "API key not configured. Set FS_API_KEY environment variable "
-                "or edit secrets.json to add your API key."
-            )
 
         # Initialize curses
         curses.curs_set(1)
@@ -89,33 +92,51 @@ class ForbiddenScribeEditor:
         # Response queue for API calls
         self.response_queue: Queue = Queue()
 
-        # Initialize LLM client
+        # Initialize LLM client and agents
+        # Note: Empty string API key is valid for APIs without authentication
         self.llm_client = OpenAICompatibleClient(
             api_key=self.secrets.api_key,
             base_url=self.config.api.api_url,
             model=self.config.api.model_name,
             logger=get_logger("llm"),
+            debug=self.debug_mode,
         )
-
-        # Initialize agents
         prompt_path = config_dir / self.config.default_prompt_path
         self.edit_agent = EditAgent(self.llm_client, prompt_path)
         self.fix_agent = FixAgent(self.llm_client)
         self.condense_agent = CondenseAgent(self.llm_client)
         self.expand_agent = ExpandAgent(self.llm_client)
 
-        # Create windows and panels
-        self._create_windows()
-
         # Create menus
         self.left_menu: Optional[Menu] = None
         self.right_menu: Optional[Menu] = None
+
+        # Debug panel (created in _create_windows if debug_mode)
+        self.debug_panel: Optional[DebugPanel] = None
+        self.debug_handler: Optional[DebugPanelHandler] = None
+
+        # Create windows and panels
+        self._create_windows()
+
+        # Attach debug handler to root logger if debug mode
+        if self.debug_mode:
+            self._setup_debug_logging()
+            self._log_config()
 
         self.logger.info("Editor initialized")
 
     def _create_windows(self) -> None:
         """Create or recreate windows based on terminal size."""
         height, width = self.stdscr.getmaxyx()
+
+        # Calculate main content width (leave space for debug if enabled)
+        if self.debug_mode:
+            # Split: 60% main content, 40% debug panel
+            main_width = max(40, int(width * 0.6))
+            debug_width = width - main_width
+        else:
+            main_width = width
+            debug_width = 0
 
         # Layout: header(1) + passages(75%) + input(25%) + footer(1)
         content_height = height - 2
@@ -125,13 +146,20 @@ class ForbiddenScribeEditor:
         # Create windows
         try:
             self.passage_win = curses.newwin(
-                self.passage_height, width, 1, 0
+                self.passage_height, main_width, 1, 0
             )
             self.input_win = curses.newwin(
-                self.input_height, width, 1 + self.passage_height, 0
+                self.input_height, main_width, 1 + self.passage_height, 0
             )
             self.passage_win.keypad(True)
             self.input_win.keypad(True)
+
+            # Create debug window if enabled
+            if self.debug_mode and debug_width > 10:
+                self.debug_win = curses.newwin(
+                    content_height, debug_width, 1, main_width
+                )
+                self.debug_win.keypad(True)
         except curses.error:
             pass
 
@@ -140,6 +168,14 @@ class ForbiddenScribeEditor:
             self.passage_win, self.state.document.passages
         )
         self.input_panel = InputPanel(self.input_win)
+        self.edit_panel: Optional[EditPanel] = None  # Created when entering edit mode
+
+        # Create debug panel if enabled
+        if self.debug_mode and hasattr(self, 'debug_win'):
+            self.debug_panel = DebugPanel(self.debug_win)
+            # Re-attach handler to new panel if it exists
+            if self.debug_handler:
+                self.debug_handler.panel = self.debug_panel
 
         # Set initial focus
         self._update_focus()
@@ -149,13 +185,75 @@ class ForbiddenScribeEditor:
         if self.state.mode == EditorMode.INPUT:
             self.passage_panel.focused = False
             self.input_panel.focused = True
+            if self.edit_panel:
+                self.edit_panel.focused = False
         elif self.state.mode == EditorMode.PASSAGES:
             self.passage_panel.focused = True
             self.input_panel.focused = False
-        else:
-            # Menus or prompts - dim both
+            if self.edit_panel:
+                self.edit_panel.focused = False
+        elif self.state.mode == EditorMode.EDIT_PASSAGE:
             self.passage_panel.focused = False
             self.input_panel.focused = False
+            if self.edit_panel:
+                self.edit_panel.focused = True
+        else:
+            # Menus or prompts - dim all
+            self.passage_panel.focused = False
+            self.input_panel.focused = False
+            if self.edit_panel:
+                self.edit_panel.focused = False
+
+    def _setup_debug_logging(self) -> None:
+        """Set up logging handler for debug panel."""
+        # Create a temporary panel for the handler
+        # (will be replaced when windows are created)
+        if not self.debug_panel:
+            # Create a minimal panel that will be replaced
+            height, width = self.stdscr.getmaxyx()
+            temp_win = curses.newwin(height - 2, width // 3, 1, width * 2 // 3)
+            self.debug_panel = DebugPanel(temp_win)
+
+        # Create and attach handler
+        self.debug_handler = DebugPanelHandler(self.debug_panel)
+        self.debug_handler.setLevel(logging.DEBUG)
+
+        # Add to root logger to capture all log messages
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.debug_handler)
+
+    def _log_config(self) -> None:
+        """Log all configuration settings when debug mode is enabled."""
+        self.logger.info("=== Configuration Settings ===")
+        self.logger.info(f"Config directory: {self.config_dir}")
+
+        # API configuration
+        self.logger.info("--- API Config ---")
+        self.logger.info(f"  api_url: {self.config.api.api_url}")
+        self.logger.info(f"  api_spec: {self.config.api.api_spec}")
+        self.logger.info(f"  model_name: {self.config.api.model_name}")
+        self.logger.info(f"  temperature: {self.config.api.temperature}")
+        self.logger.info(f"  max_input_tokens: {self.config.api.max_input_tokens}")
+        self.logger.info(f"  max_output_tokens: {self.config.api.max_output_tokens}")
+        self.logger.info(f"  structured_output_schema: {self.config.api.structured_output_schema}")
+
+        # App configuration
+        self.logger.info("--- App Config ---")
+        self.logger.info(f"  default_prompt_path: {self.config.default_prompt_path}")
+        self.logger.info(f"  log_path: {self.config.log_path}")
+        self.logger.info(f"  context_chars: {self.config.context_chars}")
+        self.logger.info(f"  works_directory: {self.config.works_directory}")
+
+        # Secrets (redacted)
+        self.logger.info("--- Secrets ---")
+        api_key_display = (
+            f"{self.secrets.api_key[:8]}..."
+            if len(self.secrets.api_key) > 8
+            else "[empty]" if not self.secrets.api_key
+            else "[too short to redact]"
+        )
+        self.logger.info(f"  api_key: {api_key_display}")
+        self.logger.info("=== End Configuration ===")
 
     def _draw_header(self) -> None:
         """Draw the header line."""
@@ -174,13 +272,14 @@ class ForbiddenScribeEditor:
             EditorMode.MENU_RIGHT: "MENU",
         }.get(self.state.mode, "")
 
-        header = f" Forbidden Scribe: {filename}{modified} | {mode_str} "
-        header = header.ljust(width)[:width - 1]
+        header = f"── Forbidden Scribe: {filename}{modified} | {mode_str} "
+        # Pad with box-drawing line character
+        header = header + "─" * (width - len(header) - 1)
+        header = header[:width - 1]
 
         try:
-            self.stdscr.attron(curses.color_pair(ColorPair.HEADER))
-            self.stdscr.addstr(0, 0, header)
-            self.stdscr.attroff(curses.color_pair(ColorPair.HEADER))
+            attr = curses.color_pair(ColorPair.HEADER) | curses.A_BOLD
+            self.stdscr.addstr(0, 0, header, attr)
         except curses.error:
             pass
 
@@ -199,21 +298,23 @@ class ForbiddenScribeEditor:
             status = self.state.status_message
 
         if self.state.mode == EditorMode.INPUT:
-            help_text = "TAB:Passages | Ctrl+D:Send | Ctrl+S:Save | Ctrl+Q:Quit"
+            help_text = "TAB:Passages | Enter/Ctrl+D:Send | Ctrl+S:Save | Ctrl+Q:Quit"
         elif self.state.mode == EditorMode.PASSAGES:
-            help_text = "TAB:Input | ←/→:Menu | Enter:Edit | Ctrl+S:Save | Ctrl+Q:Quit"
+            help_text = "TAB:Input | ←→:Menu | Enter:Edit | ESC:Back"
+        elif self.state.mode == EditorMode.EDIT_PASSAGE:
+            help_text = "Ctrl+S:Save Changes | ESC:Cancel"
         elif self.state.mode in (EditorMode.MENU_LEFT, EditorMode.MENU_RIGHT):
-            help_text = "↑/↓:Select | Enter:Confirm | Esc:Cancel"
+            help_text = "↑↓:Select | Enter:Confirm | ESC:Cancel"
         else:
-            help_text = "Esc:Cancel | Ctrl+S:Save | Ctrl+Q:Quit"
+            help_text = "ESC:Back | Ctrl+S:Save | Ctrl+Q:Quit"
 
-        footer = f" {status} | {help_text} "
-        footer = footer.ljust(width)[:width - 1]
+        footer = f"─ {status} │ {help_text} "
+        footer = "─" * (width - len(footer) - 1) + footer
+        footer = footer[:width - 1]
 
         try:
-            self.stdscr.attron(curses.color_pair(ColorPair.FOOTER))
-            self.stdscr.addstr(height - 1, 0, footer)
-            self.stdscr.attroff(curses.color_pair(ColorPair.FOOTER))
+            attr = curses.color_pair(ColorPair.FOOTER)
+            self.stdscr.addstr(height - 1, 0, footer, attr)
         except curses.error:
             pass
 
@@ -226,7 +327,16 @@ class ForbiddenScribeEditor:
 
         self.passage_panel.update_passages(self.state.document.passages)
         self.passage_panel.draw()
-        self.input_panel.draw()
+
+        # Draw appropriate input panel based on mode
+        if self.state.mode == EditorMode.EDIT_PASSAGE and self.edit_panel:
+            self.edit_panel.draw()
+        else:
+            self.input_panel.draw()
+
+        # Draw debug panel if enabled
+        if self.debug_panel:
+            self.debug_panel.draw()
 
         # Draw menus if visible
         if self.left_menu and self.left_menu.visible:
@@ -244,30 +354,44 @@ class ForbiddenScribeEditor:
             return
 
         self.logger.info(f"Sending to API: {len(text)} chars")
+
+        # Create pending passage immediately
+        pending_passage = self.state.document.add_pending_passage(text)
+        self.passage_panel.update_passages(self.state.document.passages)
+        self.passage_panel.select_last()
+        self.input_panel.clear()
+
         self.state.processing = True
         self.state.status_message = "Sending to API..."
 
-        # Get context from existing passages
+        # Get context from existing passages (excluding the pending one)
+        # Only if send_prepend_passage is enabled in document meta
         context = ""
-        if self.state.document.passages:
+        if (self.state.document.meta.send_prepend_passage
+                and len(self.state.document.passages) > 1):
             context = self.state.document.get_context_text(
-                len(self.state.document.passages),
+                len(self.state.document.passages) - 1,
                 self.config.context_chars,
             )
 
         # Run API call in background thread
         thread = threading.Thread(
             target=self._api_call_thread,
-            args=(text, context, "edit"),
+            args=(pending_passage.id, text, context, "edit"),
             daemon=True,
         )
         thread.start()
 
-    def _execute_passage_operation(self, operation: str) -> None:
+    def _execute_passage_operation(
+        self,
+        operation: str,
+        custom_instructions: str = "",
+    ) -> None:
         """Execute an operation on the selected passage.
 
         Args:
             operation: Operation to perform (fix, condense, expand, etc.)
+            custom_instructions: Optional custom instructions for the operation.
         """
         passage = self.passage_panel.get_selected()
         if not passage:
@@ -278,25 +402,30 @@ class ForbiddenScribeEditor:
         self.state.processing = True
         self.state.status_message = f"Running {operation}..."
 
-        # Get context
+        # Get context only if enabled in document meta
         idx = self.passage_panel.selected_index
-        preceding = self.state.document.get_context_text(
-            idx, self.config.context_chars
-        )
-        subsequent = self.state.document.get_subsequent_text(
-            idx, self.config.context_chars
-        )
+        preceding = ""
+        subsequent = ""
+        if self.state.document.meta.send_prepend_passage:
+            preceding = self.state.document.get_context_text(
+                idx, self.config.context_chars
+            )
+        if self.state.document.meta.send_append_text:
+            subsequent = self.state.document.get_subsequent_text(
+                idx, self.config.context_chars
+            )
 
         # Run in background
         thread = threading.Thread(
             target=self._operation_thread,
-            args=(passage, operation, preceding, subsequent),
+            args=(passage, operation, preceding, subsequent, custom_instructions),
             daemon=True,
         )
         thread.start()
 
     def _api_call_thread(
         self,
+        passage_id: str,
         text: str,
         context: str,
         operation: str,
@@ -311,6 +440,7 @@ class ForbiddenScribeEditor:
             )
             self.response_queue.put({
                 "type": "new_passage",
+                "passage_id": passage_id,
                 "user_entry": text,
                 "result": result,
             })
@@ -318,6 +448,7 @@ class ForbiddenScribeEditor:
             self.logger.error(f"API error: {e}")
             self.response_queue.put({
                 "type": "error",
+                "passage_id": passage_id,
                 "error": str(e),
             })
 
@@ -327,6 +458,7 @@ class ForbiddenScribeEditor:
         operation: str,
         preceding: str,
         subsequent: str,
+        custom_instructions: str = "",
     ) -> None:
         """Operation thread for passage modifications."""
         try:
@@ -336,21 +468,29 @@ class ForbiddenScribeEditor:
                 "expand": self.expand_agent,
                 "reroll": self.edit_agent,
                 "reroll_unbounded": self.edit_agent,
+                "reroll_instruct": self.edit_agent,
+                "custom": self.edit_agent,
             }.get(operation, self.edit_agent)
 
             max_tokens = None
             if operation == "reroll_unbounded":
                 max_tokens = None  # Unbounded
-            elif operation != "reroll":
+            elif operation not in ("reroll", "reroll_instruct"):
                 max_tokens = self.config.api.max_output_tokens
 
-            # For reroll operations, use original user_entry
-            text = passage.user_entry if "reroll" in operation else passage.text
+            # Left menu (reroll operations): use original user_entry
+            # Right menu (refactor operations): use current passage.text
+            if "reroll" in operation:
+                text = passage.user_entry
+            else:
+                # fix, condense, expand, custom - work on current text
+                text = passage.text
 
             result = agent.execute(
                 text=text,
                 preceding_context=preceding,
                 subsequent_context=subsequent,
+                additional_instructions=custom_instructions,
                 max_tokens=max_tokens,
                 temperature=self.config.api.temperature,
             )
@@ -376,16 +516,31 @@ class ForbiddenScribeEditor:
 
                 if item["type"] == "new_passage":
                     result: AgentResult = item["result"]
-                    if result.success:
-                        self.state.document.add_passage(
-                            user_entry=item["user_entry"],
-                            ai_response=result.text,
-                            model=result.model,
+                    passage = self.state.document.get_passage_by_id(
+                        item["passage_id"]
+                    )
+                    if result.success and passage:
+                        # Update the pending passage with AI response
+                        passage.ai_response = result.text
+                        passage.text = result.text
+                        passage.model = result.model
+                        passage.pending = False
+                        # Log creation
+                        passage.audit_log.append(
+                            PassageAuditEntry(
+                                timestamp=passage.created_at,
+                                operation="create",
+                                model=result.model,
+                                previous_text=None,
+                                new_text=result.text,
+                            )
                         )
-                        self.input_panel.clear()
-                        self.passage_panel.select_last()
                         self.state.status_message = "Passage added"
                     else:
+                        if passage:
+                            # Mark as error but keep the passage
+                            passage.pending = False
+                            passage.text = f"[ERROR: {result.error}]\n\n{passage.user_entry}"
                         self.state.status_message = f"Error: {result.error}"
 
                 elif item["type"] == "passage_update":
@@ -406,6 +561,12 @@ class ForbiddenScribeEditor:
                         self.state.status_message = f"Error: {result.error}"
 
                 elif item["type"] == "error":
+                    passage_id = item.get("passage_id")
+                    if passage_id:
+                        passage = self.state.document.get_passage_by_id(passage_id)
+                        if passage:
+                            passage.pending = False
+                            passage.text = f"[ERROR: {item['error']}]\n\n{passage.user_entry}"
                     self.state.status_message = f"Error: {item['error'][:50]}"
 
                 self.state.processing = False
@@ -473,6 +634,35 @@ class ForbiddenScribeEditor:
             curses.noecho()
             self.stdscr.nodelay(True)
 
+    def _prompt_custom_instructions(self) -> Optional[str]:
+        """Prompt user for custom instructions.
+
+        Returns:
+            Custom instructions string, or None if cancelled.
+        """
+        height, width = self.stdscr.getmaxyx()
+        prompt = "Custom instructions: "
+
+        self.stdscr.attron(curses.color_pair(ColorPair.HEADER))
+        self.stdscr.addstr(height - 1, 0, " " * (width - 1))
+        self.stdscr.addstr(height - 1, 0, prompt)
+        self.stdscr.attroff(curses.color_pair(ColorPair.HEADER))
+        self.stdscr.refresh()
+
+        curses.echo()
+        self.stdscr.nodelay(False)
+        try:
+            instructions_bytes = self.stdscr.getstr(
+                height - 1, len(prompt), width - len(prompt) - 2
+            )
+            instructions = instructions_bytes.decode('utf-8').strip()
+            return instructions if instructions else None
+        except (curses.error, UnicodeDecodeError):
+            return None
+        finally:
+            curses.noecho()
+            self.stdscr.nodelay(True)
+
     def _save_document(self) -> bool:
         """Save the current document.
 
@@ -483,18 +673,18 @@ class ForbiddenScribeEditor:
         if not path:
             path = self._prompt_filename()
             if not path:
+                self.state.status_message = "Save cancelled"
                 return False
 
-        # Ensure works directory exists
-        path.parent.mkdir(parents=True, exist_ok=True)
+        success, message = self.state.document.save(path)
+        self.state.status_message = message
 
-        if self.state.document.save(path):
-            self.state.status_message = f"Saved: {path.name}"
+        if success:
             self.logger.info(f"Document saved: {path}")
-            return True
         else:
-            self.state.status_message = "Save failed"
-            return False
+            self.logger.error(f"Save failed: {message}")
+
+        return success
 
     def _handle_global_keys(self, key: int) -> bool:
         """Handle global keybindings.
@@ -505,7 +695,10 @@ class ForbiddenScribeEditor:
         Returns:
             True if key was handled.
         """
-        if key == 17:  # Ctrl+Q - Quit
+        if key == 27:  # ESC - Exit current mode / go back
+            return self._handle_escape()
+
+        elif key == 17:  # Ctrl+Q - Quit
             if self.state.document.modified:
                 choice = self._prompt_save()
                 if choice == 'y':
@@ -519,6 +712,9 @@ class ForbiddenScribeEditor:
             return True
 
         elif key == 19:  # Ctrl+S - Save
+            # In edit mode, Ctrl+S saves the edit, not the document
+            if self.state.mode == EditorMode.EDIT_PASSAGE:
+                return False  # Let edit mode handler deal with it
             self._save_document()
             return True
 
@@ -532,11 +728,37 @@ class ForbiddenScribeEditor:
 
         return False
 
+    def _handle_escape(self) -> bool:
+        """Handle ESC key - exit current mode, go up one level.
+
+        Returns:
+            True (ESC is always handled).
+        """
+        if self.state.mode == EditorMode.MENU_LEFT:
+            if self.left_menu:
+                self.left_menu.hide()
+            self.state.mode = EditorMode.PASSAGES
+            self._update_focus()
+        elif self.state.mode == EditorMode.MENU_RIGHT:
+            if self.right_menu:
+                self.right_menu.hide()
+            self.state.mode = EditorMode.PASSAGES
+            self._update_focus()
+        elif self.state.mode == EditorMode.EDIT_PASSAGE:
+            self.state.mode = EditorMode.PASSAGES
+            self._update_focus()
+        elif self.state.mode == EditorMode.PASSAGES:
+            # From passages, go back to input
+            self.state.mode = EditorMode.INPUT
+            self._update_focus()
+        # In INPUT mode, ESC does nothing (already at top level)
+        return True
+
     def _handle_input_mode_keys(self, key: int) -> None:
         """Handle keys in input mode."""
-        if key == 4:  # Ctrl+D - Send
-            if not self.state.processing:
-                self._send_to_api()
+        if key == 10 or key == 13 or key == 4:  # Enter or Ctrl+D - Send
+            # Allow sending even while processing (queue multiple requests)
+            self._send_to_api()
         else:
             self.input_panel.handle_key(key)
 
@@ -553,8 +775,69 @@ class ForbiddenScribeEditor:
             # Open right menu
             self._open_right_menu()
         elif key == 10 or key == 13:  # Enter - Edit passage
-            # TODO: Implement passage edit mode
-            self.state.status_message = "Passage edit mode not yet implemented"
+            self._enter_edit_mode()
+
+    def _enter_edit_mode(self) -> None:
+        """Enter passage edit mode."""
+        passage = self.passage_panel.get_selected()
+        if not passage:
+            self.state.status_message = "No passage selected"
+            return
+
+        self.logger.info(f"Entering edit mode for passage {passage.id}")
+
+        # Create edit panel with passage text
+        self.edit_panel = EditPanel(self.input_win, passage.text)
+        self.state.mode = EditorMode.EDIT_PASSAGE
+        self._update_focus()
+        self.state.status_message = "Editing passage - ESC to cancel, Ctrl+S to save"
+
+    def _exit_edit_mode(self, save: bool = False) -> None:
+        """Exit passage edit mode.
+
+        Args:
+            save: If True, save changes to the passage.
+        """
+        if not self.edit_panel:
+            return
+
+        if save:
+            passage = self.passage_panel.get_selected()
+            if passage:
+                new_text = self.edit_panel.get_text()
+                if new_text != passage.text:
+                    # Update passage with manual edit
+                    passage.update_text(new_text, "manual_edit", None)
+                    self.state.document.modified = True
+                    self.state.status_message = "Passage updated"
+                    self.logger.info(f"Passage {passage.id} manually edited")
+                else:
+                    self.state.status_message = "No changes"
+            else:
+                self.state.status_message = "No passage selected"
+        else:
+            self.state.status_message = "Edit cancelled"
+
+        self.edit_panel = None
+        self.state.mode = EditorMode.PASSAGES
+        self._update_focus()
+
+    def _handle_edit_mode_keys(self, key: int) -> None:
+        """Handle keys in edit mode."""
+        if not self.edit_panel:
+            return
+
+        # Ctrl+S saves the edit
+        if key == 19:  # Ctrl+S
+            self._exit_edit_mode(save=True)
+            return
+        # ESC cancels
+        elif key == 27:  # ESC
+            self._exit_edit_mode(save=False)
+            return
+
+        # All other keys pass to edit panel
+        self.edit_panel.handle_key(key)
 
     def _open_left_menu(self) -> None:
         """Open the left (regeneration) menu."""
@@ -596,15 +879,23 @@ class ForbiddenScribeEditor:
 
             if action in ("reroll", "reroll_unbounded", "reroll_instruct"):
                 if action == "reroll_instruct":
-                    # TODO: Prompt for instructions
-                    self.state.status_message = "Custom instructions not yet implemented"
+                    # Prompt for custom reroll instructions
+                    instructions = self._prompt_custom_instructions()
+                    if instructions:
+                        self._execute_passage_operation(action, instructions)
+                    else:
+                        self.state.status_message = "Reroll cancelled"
                 else:
                     self._execute_passage_operation(action)
             elif action in ("fix", "condense", "expand"):
                 self._execute_passage_operation(action)
             elif action == "custom":
-                # TODO: Prompt for custom instructions
-                self.state.status_message = "Custom instructions not yet implemented"
+                # Prompt for custom refactor instructions
+                instructions = self._prompt_custom_instructions()
+                if instructions:
+                    self._execute_passage_operation(action, instructions)
+                else:
+                    self.state.status_message = "Custom operation cancelled"
 
         elif key == 27:  # Escape
             menu.hide()
@@ -647,6 +938,8 @@ class ForbiddenScribeEditor:
                 self._handle_input_mode_keys(key)
             elif self.state.mode == EditorMode.PASSAGES:
                 self._handle_passages_mode_keys(key)
+            elif self.state.mode == EditorMode.EDIT_PASSAGE:
+                self._handle_edit_mode_keys(key)
             elif self.state.mode in (EditorMode.MENU_LEFT, EditorMode.MENU_RIGHT):
                 self._handle_menu_keys(key)
 

@@ -6,12 +6,13 @@ into polished prose. Features a two-panel TUI with passage navigation,
 menu-based operations, and structured document storage.
 
 Usage:
-    python main.py [document.json]
+    python main.py [document.json] [--debug]
 
 Configuration:
     API key can be set via:
     - FS_API_KEY environment variable, or
     - secrets.json with "api_key" field
+    Note: Empty string is valid for APIs without authentication.
 
     Optional environment variables (override config.json):
     - FS_API_URL: API endpoint URL (default: https://api.cerebras.ai/v1)
@@ -51,6 +52,11 @@ def parse_args() -> argparse.Namespace:
         default=Path(__file__).parent,
         help="Directory containing config.json and secrets.json",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show debug panel with scrolling log output",
+    )
     return parser.parse_args()
 
 
@@ -64,7 +70,9 @@ def main(stdscr: "curses.window", args: argparse.Namespace) -> None:
     logger = get_logger("main")
 
     try:
-        editor = ForbiddenScribeEditor(stdscr, args.config_dir)
+        editor = ForbiddenScribeEditor(
+            stdscr, args.config_dir, debug=args.debug
+        )
 
         # Load document if specified
         if args.document:
@@ -80,20 +88,6 @@ def main(stdscr: "curses.window", args: argparse.Namespace) -> None:
                 logger.error(f"Failed to load document: {e}")
 
         editor.run()
-
-    except ValueError as e:
-        # Configuration error - show message and exit
-        logger.error(f"Configuration error: {e}")
-        curses.endwin()
-        print(f"\nError: {e}", file=sys.stderr)
-        print("\nTo configure the API key, either:", file=sys.stderr)
-        print("  Option 1: Set environment variable FS_API_KEY", file=sys.stderr)
-        print("  Option 2: Edit secrets.json and set \"api_key\"", file=sys.stderr)
-        print(f"\n  Config dir: {args.config_dir}", file=sys.stderr)
-        print("\nOptional environment variables:", file=sys.stderr)
-        print("  FS_API_URL  - API endpoint URL", file=sys.stderr)
-        print("  FS_MODEL    - Model name to use", file=sys.stderr)
-        sys.exit(1)
 
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)

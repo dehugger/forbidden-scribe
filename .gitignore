@@ -29,3 +29,6 @@ tmp/
 
 # Config files with secrets
 secrets.json
+
+# Prompts (local customization)
+prompts/

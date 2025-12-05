@@ -6,39 +6,65 @@ from typing import Optional
 
 
 class ColorPair(IntEnum):
-    """Color pair indices for the UI."""
+    """Color pair indices for the UI.
 
-    HEADER = 1       # Black on cyan
-    FOOTER = 2       # Black on white
-    BORDER_FOCUS = 3 # Green on default
-    BORDER_INPUT = 4 # Yellow on default
-    BORDER_DIM = 5   # White on default
-    SELECTED = 6     # Black on white (for selected passage)
-    MENU_BG = 7      # Black on blue (menu background)
-    MENU_SELECT = 8  # Black on cyan (menu selection)
+    Designed for dark terminal backgrounds.
+    """
+
+    HEADER = 1       # Cyan on default (bright header text)
+    FOOTER = 2       # White on default (status text)
+    BORDER_FOCUS = 3 # Green on default (focused panel)
+    BORDER_INPUT = 4 # Yellow on default (input panel focused)
+    BORDER_DIM = 5   # White/dim on default (unfocused)
+    SELECTED = 6     # Green on default (selected passage highlight)
+    MENU_BG = 7      # Cyan on default (menu items)
+    MENU_SELECT = 8  # Black on cyan (menu selection highlight)
+    ERROR = 9        # Red on default (error log lines)
+    WARNING = 10     # Yellow on default (warning log lines)
+    DEBUG = 11       # Magenta on default (debug log lines)
+    # Gradient colors for passage indicators (12-19)
+    INDICATOR_1 = 12  # Red
+    INDICATOR_2 = 13  # Yellow
+    INDICATOR_3 = 14  # Green
+    INDICATOR_4 = 15  # Cyan
+    INDICATOR_5 = 16  # Blue
+    INDICATOR_6 = 17  # Magenta
 
 
 def setup_colors() -> None:
-    """Initialize curses color pairs."""
+    """Initialize curses color pairs for dark terminal backgrounds."""
     curses.start_color()
     curses.use_default_colors()
 
-    curses.init_pair(ColorPair.HEADER, curses.COLOR_BLACK, curses.COLOR_CYAN)
-    curses.init_pair(ColorPair.FOOTER, curses.COLOR_BLACK, curses.COLOR_WHITE)
+    # Use light text on default (dark) background for readability
+    curses.init_pair(ColorPair.HEADER, curses.COLOR_CYAN, -1)
+    curses.init_pair(ColorPair.FOOTER, curses.COLOR_WHITE, -1)
     curses.init_pair(ColorPair.BORDER_FOCUS, curses.COLOR_GREEN, -1)
     curses.init_pair(ColorPair.BORDER_INPUT, curses.COLOR_YELLOW, -1)
     curses.init_pair(ColorPair.BORDER_DIM, curses.COLOR_WHITE, -1)
-    curses.init_pair(ColorPair.SELECTED, curses.COLOR_BLACK, curses.COLOR_WHITE)
-    curses.init_pair(ColorPair.MENU_BG, curses.COLOR_WHITE, curses.COLOR_BLUE)
+    curses.init_pair(ColorPair.SELECTED, curses.COLOR_GREEN, -1)
+    curses.init_pair(ColorPair.MENU_BG, curses.COLOR_CYAN, -1)
     curses.init_pair(ColorPair.MENU_SELECT, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(ColorPair.ERROR, curses.COLOR_RED, -1)
+    curses.init_pair(ColorPair.WARNING, curses.COLOR_YELLOW, -1)
+    curses.init_pair(ColorPair.DEBUG, curses.COLOR_MAGENTA, -1)
+
+    # Gradient colors for passage indicators
+    curses.init_pair(ColorPair.INDICATOR_1, curses.COLOR_RED, -1)
+    curses.init_pair(ColorPair.INDICATOR_2, curses.COLOR_YELLOW, -1)
+    curses.init_pair(ColorPair.INDICATOR_3, curses.COLOR_GREEN, -1)
+    curses.init_pair(ColorPair.INDICATOR_4, curses.COLOR_CYAN, -1)
+    curses.init_pair(ColorPair.INDICATOR_5, curses.COLOR_BLUE, -1)
+    curses.init_pair(ColorPair.INDICATOR_6, curses.COLOR_MAGENTA, -1)
 
 
-def wrap_text(text: str, width: int) -> list[str]:
+def wrap_text(text: str, width: int, word_wrap: bool = True) -> list[str]:
     """Wrap text to fit within width.
 
     Args:
         text: Text to wrap.
         width: Maximum line width.
+        word_wrap: If True, try to wrap at word boundaries.
 
     Returns:
         List of wrapped lines.
@@ -52,12 +78,44 @@ def wrap_text(text: str, width: int) -> list[str]:
     for line in lines:
         if len(line) <= width:
             wrapped.append(line)
+        elif word_wrap:
+            # Word-based wrapping
+            current = ""
+            words = line.split(" ")
+            for word in words:
+                if not current:
+                    # First word on line
+                    if len(word) <= width:
+                        current = word
+                    else:
+                        # Word too long, hard wrap it
+                        while len(word) > width:
+                            wrapped.append(word[:width])
+                            word = word[width:]
+                        current = word
+                elif len(current) + 1 + len(word) <= width:
+                    # Word fits on current line
+                    current += " " + word
+                else:
+                    # Word doesn't fit, start new line
+                    wrapped.append(current)
+                    if len(word) <= width:
+                        current = word
+                    else:
+                        # Word too long, hard wrap it
+                        while len(word) > width:
+                            wrapped.append(word[:width])
+                            word = word[width:]
+                        current = word
+            if current:
+                wrapped.append(current)
         else:
             # Hard wrap at width
             while len(line) > width:
                 wrapped.append(line[:width])
                 line = line[width:]
-            wrapped.append(line)
+            if line:
+                wrapped.append(line)
 
     return wrapped
 

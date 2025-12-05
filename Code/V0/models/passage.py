@@ -65,12 +65,16 @@ class Passage:
     model: str = ""  # Model that generated ai_response
     created_at: str = field(default_factory=_now_iso)
     manual_edited: bool = False
+    pending: bool = False  # Waiting for AI response
     audit_log: list[PassageAuditEntry] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """Initialize text to ai_response if not set."""
-        if not self.text and self.ai_response:
-            self.text = self.ai_response
+        """Initialize text to ai_response or user_entry if not set."""
+        if not self.text:
+            if self.ai_response:
+                self.text = self.ai_response
+            elif self.user_entry:
+                self.text = self.user_entry
 
     def update_text(
         self,
@@ -113,6 +117,7 @@ class Passage:
             "model": self.model,
             "created_at": self.created_at,
             "manual_edited": self.manual_edited,
+            "pending": self.pending,
             "audit_log": [e.to_dict() for e in self.audit_log],
         }
 
@@ -132,6 +137,7 @@ class Passage:
             model=data.get("model", ""),
             created_at=data.get("created_at", _now_iso()),
             manual_edited=data.get("manual_edited", False),
+            pending=data.get("pending", False),
             audit_log=audit_entries,
         )
 
@@ -170,5 +176,32 @@ class Passage:
                 previous_text=None,
                 new_text=ai_response,
             )
+        )
+        return passage
+
+    @classmethod
+    def create_pending(
+        cls,
+        user_entry: str,
+        rank: int = 0
+    ) -> "Passage":
+        """Factory method to create a pending passage.
+
+        Creates a passage that shows user input while waiting for AI response.
+
+        Args:
+            user_entry: Original user input text.
+            rank: Display order (default 0).
+
+        Returns:
+            New Passage instance marked as pending.
+        """
+        passage = cls(
+            rank=rank,
+            user_entry=user_entry,
+            ai_response="",
+            text=user_entry,
+            model="",
+            pending=True,
         )
         return passage

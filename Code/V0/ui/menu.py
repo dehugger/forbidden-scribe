@@ -133,38 +133,29 @@ class Menu:
         x = max(0, x)
         y = max(0, y)
 
-        # Draw menu background
-        for row in range(menu_height):
-            try:
-                self.stdscr.addstr(
-                    y + row, x,
-                    " " * menu_width,
-                    curses.color_pair(ColorPair.MENU_BG),
-                )
-            except curses.error:
-                pass
+        border_attr = curses.color_pair(ColorPair.MENU_BG)
+        title_attr = curses.color_pair(ColorPair.MENU_BG) | curses.A_BOLD
 
-        # Draw border
         try:
             # Top border
             self.stdscr.addstr(
                 y, x,
                 "┌" + "─" * (menu_width - 2) + "┐",
-                curses.color_pair(ColorPair.MENU_BG),
+                border_attr,
             )
             # Title
             title_padded = f" {self.title} ".center(menu_width - 2)
-            self.stdscr.addstr(
-                y + 1, x,
-                "│" + title_padded + "│",
-                curses.color_pair(ColorPair.MENU_BG) | curses.A_BOLD,
-            )
+            self.stdscr.addstr(y + 1, x, "│", border_attr)
+            self.stdscr.addstr(y + 1, x + 1, title_padded, title_attr)
+            self.stdscr.addstr(y + 1, x + menu_width - 1, "│", border_attr)
+
             # Separator
             self.stdscr.addstr(
                 y + 2, x,
                 "├" + "─" * (menu_width - 2) + "┤",
-                curses.color_pair(ColorPair.MENU_BG),
+                border_attr,
             )
+
             # Items
             for i, item in enumerate(self.items):
                 row = y + 3 + i
@@ -177,19 +168,16 @@ class Menu:
 
                 label = prefix + item.label
                 label_padded = label.ljust(menu_width - 2)
-                self.stdscr.addstr(row, x, "│", curses.color_pair(ColorPair.MENU_BG))
+
+                self.stdscr.addstr(row, x, "│", border_attr)
                 self.stdscr.addstr(row, x + 1, label_padded, attr)
-                self.stdscr.addstr(
-                    row, x + menu_width - 1,
-                    "│",
-                    curses.color_pair(ColorPair.MENU_BG),
-                )
+                self.stdscr.addstr(row, x + menu_width - 1, "│", border_attr)
 
             # Bottom border
             self.stdscr.addstr(
                 y + menu_height - 1, x,
                 "└" + "─" * (menu_width - 2) + "┘",
-                curses.color_pair(ColorPair.MENU_BG),
+                border_attr,
             )
         except curses.error:
             pass
@@ -211,7 +199,9 @@ RIGHT_MENU_ITEMS = [
 
 
 def create_left_menu(stdscr: "curses.window", x: int, y: int) -> Menu:
-    """Create the left (regeneration) menu.
+    """Create the left (reroll) menu.
+
+    Reroll operations regenerate from original user input.
 
     Args:
         stdscr: Main screen.
@@ -221,11 +211,13 @@ def create_left_menu(stdscr: "curses.window", x: int, y: int) -> Menu:
     Returns:
         Configured Menu instance.
     """
-    return Menu(stdscr, "Regenerate", LEFT_MENU_ITEMS, x, y)
+    return Menu(stdscr, "Reroll", LEFT_MENU_ITEMS, x, y)
 
 
 def create_right_menu(stdscr: "curses.window", x: int, y: int) -> Menu:
-    """Create the right (edit operations) menu.
+    """Create the right (refactor) menu.
+
+    Refactor operations work on current passage text.
 
     Args:
         stdscr: Main screen.
@@ -235,4 +227,4 @@ def create_right_menu(stdscr: "curses.window", x: int, y: int) -> Menu:
     Returns:
         Configured Menu instance.
     """
-    return Menu(stdscr, "Edit", RIGHT_MENU_ITEMS, x, y)
+    return Menu(stdscr, "Refactor", RIGHT_MENU_ITEMS, x, y)

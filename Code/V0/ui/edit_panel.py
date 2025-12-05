@@ -1,4 +1,4 @@
-"""Input panel for user text entry."""
+"""Edit panel for editing passage text."""
 
 import curses
 from typing import Optional
@@ -6,52 +6,47 @@ from typing import Optional
 from ui.base import ColorPair, draw_box, safe_addstr
 
 
-class InputPanel:
-    """Panel for entering user text.
+class EditPanel:
+    """Panel for editing passage text.
 
-    The input panel provides a multi-line text editing area
-    where users can compose their rough drafts before sending
-    to the AI for refinement.
+    Similar to InputPanel but for editing existing passage content.
     """
 
-    def __init__(self, window: "curses.window") -> None:
-        """Initialize the input panel.
+    def __init__(self, window: "curses.window", initial_text: str = "") -> None:
+        """Initialize the edit panel.
 
         Args:
             window: Curses window to render into.
+            initial_text: Initial text to edit.
         """
         self.window = window
-        self.lines: list[str] = [""]
+        self.lines: list[str] = initial_text.split("\n") if initial_text else [""]
         self.cursor_x: int = 0
         self.cursor_y: int = 0
         self.scroll_offset: int = 0
         self.focused: bool = True
 
     def get_text(self) -> str:
-        """Get all input text as a single string.
+        """Get all text as a single string.
 
         Returns:
             Combined text from all lines.
         """
         return "\n".join(self.lines)
 
-    def clear(self) -> None:
-        """Clear all input text."""
-        self.lines = [""]
+    def set_text(self, text: str) -> None:
+        """Set the text content.
+
+        Args:
+            text: New text content.
+        """
+        self.lines = text.split("\n") if text else [""]
         self.cursor_x = 0
         self.cursor_y = 0
         self.scroll_offset = 0
 
-    def is_empty(self) -> bool:
-        """Check if input is empty.
-
-        Returns:
-            True if no text has been entered.
-        """
-        return self.lines == [""] or not any(self.lines)
-
     def handle_key(self, key: int) -> bool:
-        """Handle a keypress in the input panel.
+        """Handle a keypress in the edit panel.
 
         Args:
             key: The key code pressed.
@@ -81,11 +76,23 @@ class InputPanel:
         elif key == curses.KEY_END:
             self.cursor_x = len(self.lines[self.cursor_y])
             return True
+        elif key == 10 or key == 13:  # Enter - new line
+            return self._handle_enter()
         elif 32 <= key <= 126:  # Printable ASCII
             return self._handle_char(chr(key))
 
-        # Note: ENTER (10, 13) is handled at editor level to send input
         return False
+
+    def _handle_enter(self) -> bool:
+        """Handle Enter key - insert newline."""
+        line = self.lines[self.cursor_y]
+        # Split line at cursor
+        self.lines[self.cursor_y] = line[:self.cursor_x]
+        self.lines.insert(self.cursor_y + 1, line[self.cursor_x:])
+        self.cursor_y += 1
+        self.cursor_x = 0
+        self._ensure_visible()
+        return True
 
     def _handle_backspace(self) -> bool:
         """Handle backspace key."""
@@ -216,18 +223,18 @@ class InputPanel:
         return wrapped, cursor_row, cursor_col
 
     def draw(self) -> None:
-        """Render the input panel with soft line wrapping."""
+        """Render the edit panel with soft line wrapping."""
         self.window.erase()
         height, width = self.window.getmaxyx()
 
         # Draw border
         border_color = (
-            ColorPair.BORDER_INPUT if self.focused else ColorPair.BORDER_DIM
+            ColorPair.BORDER_FOCUS if self.focused else ColorPair.BORDER_DIM
         )
         draw_box(self.window, border_color)
 
         # Draw title
-        title = " Input - Enter or Ctrl+D to send "
+        title = " Edit Passage - ESC to cancel, Ctrl+S to save "
         safe_addstr(self.window, 0, 2, title)
 
         # Content area

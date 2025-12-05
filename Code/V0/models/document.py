@@ -51,6 +51,23 @@ class Document:
         self.modified = True
         return passage
 
+    def add_pending_passage(self, user_entry: str) -> Passage:
+        """Create and append a pending passage.
+
+        Args:
+            user_entry: Original user input text.
+
+        Returns:
+            The newly created pending Passage.
+        """
+        passage = Passage.create_pending(
+            user_entry=user_entry,
+            rank=len(self.passages),
+        )
+        self.passages.append(passage)
+        self.modified = True
+        return passage
+
     def get_passage(self, index: int) -> Optional[Passage]:
         """Get passage by index with bounds checking.
 
@@ -198,27 +215,35 @@ class Document:
             },
         }
 
-    def save(self, path: Optional[Path] = None) -> bool:
+    def save(self, path: Optional[Path] = None) -> tuple[bool, str]:
         """Save document to JSON file.
 
         Args:
             path: File path to save to. Uses file_path if not specified.
 
         Returns:
-            True if save succeeded, False otherwise.
+            Tuple of (success, message).
         """
         save_path = path or self.file_path
         if not save_path:
-            return False
+            return False, "No file path specified"
 
         try:
+            # Ensure parent directory exists
+            save_path = Path(save_path)  # Ensure it's a Path object
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+
             with open(save_path, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, indent=2)
             self.file_path = save_path
             self.modified = False
-            return True
-        except (OSError, IOError):
-            return False
+            return True, f"Saved: {save_path.name}"
+        except PermissionError:
+            return False, f"Permission denied: {save_path}"
+        except OSError as e:
+            return False, f"Save error: {e}"
+        except Exception as e:
+            return False, f"Unexpected error: {e}"
 
     @classmethod
     def load(cls, path: Path) -> "Document":
