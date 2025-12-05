@@ -1,0 +1,25 @@
+{
+  "api": {
+    "api_url": "https://api.cerebras.ai/v1",
+    "api_spec": "openai",
+    "model_name": "llama3.1-8b",
+    "temperature": 0.7,
+    "max_input_tokens": 4096,
+    "max_output_tokens": null,
+    "structured_output_schema": null
+  },
+  "keybindings": {
+    "quit": "ctrl+q",
+    "save": "ctrl+s",
+    "send": "ctrl+d",
+    "switch_focus": "tab",
+    "menu_left": "left",
+    "menu_right": "right",
+    "edit_passage": "enter",
+    "cancel": "escape"
+  },
+  "default_prompt_path": "prompts/default_prompt.txt",
+  "log_path": "logs/forbidden_scribe.log",
+  "context_chars": 2000,
+  "works_directory": "works"
+}
